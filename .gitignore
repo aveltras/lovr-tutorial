@@ -1,0 +1,5 @@
+/.direnv
+/android-build
+/build
+/.env
+*.keystore
