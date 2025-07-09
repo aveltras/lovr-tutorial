@@ -14,10 +14,10 @@ local button = {
 local tips = {}
 
 
-local hands = {               -- palms that can push and grab objects
-    colliders = { nil, nil }, -- physical objects for palms
-    touching  = { nil, nil }, -- the collider currently touched by each hand
-    holding   = { nil, nil }, -- the collider attached to palm
+local hands = {                   -- palms that can push and grab objects
+    colliders = { nil, nil },     -- physical objects for palms
+    touching  = { nil, nil },     -- the collider currently touched by each hand
+    holding   = { nil, nil },     -- the collider attached to palm
     solid     = { false, false }, -- hand can either pass through objects or be solid
 }
 
@@ -26,6 +26,19 @@ local hand_force = 300
 
 local wireframeEnabled = false
 local phywireEnabled = false
+
+local pickupable = {}
+pickupable.__index = pickupable
+
+function pickupable:new(model, userData)
+    model = lovr.graphics.newModel('ruger.glb')
+    collider = world:newCollider(0, 1.5, -2)
+    collider:setKinematic(false)
+    collider:addShape(lovr.physics.newConvexShape(model))
+    collider:setSleepingAllowed(false)
+    collider:setTag("pickupable")
+    collider:setUserData(userData)
+end
 
 local vrController = {}
 vrController.__index = vrController
@@ -55,13 +68,17 @@ function vrController:new(world, playerHeight)
         handColliders[i] = world:newBoxCollider(vec3(0, 2, 0), vec3(0.04, 0.08, 0.08))
         handColliders[i]:setKinematic(true)
         handColliders[i]:setSensor(true)
+        handColliders[i]:setTag("hand")
     end
 
     local self = {
+        world = world,
         origin = lovr.math.newMat4(),
         playerHeight = playerHeight,
         bodyCollider = bodyCollider,
         handColliders = handColliders,
+        handVelocity = { lovr.math.newVec3(), lovr.math.newVec3() },
+        itemHeld = { nil, nil },
         thumbstickDeadzone = 0.4,
         turnMode = "smooth",
         walkingSpeed = 6,
@@ -128,8 +145,8 @@ function vrController:update(dt)
 
     if lovr.headset.isTracked('left') then
         local origin = vec3(self.bodyCollider:getPosition())
-        local endpoint = origin - vec3(0, 0.7, 0)
-        local collider = world:raycast(origin, endpoint, "~character")
+        local endpoint = origin - vec3(0, 0.10, 0)
+        local collider = world:raycast(origin + vec3(0, 0.05, 0), endpoint, "~character")
         local onGround = collider and true
 
         local x, y = lovr.headset.getAxis('left', 'thumbstick')
@@ -154,39 +171,62 @@ function vrController:update(dt)
         end
 
         if onGround and lovr.headset.wasPressed('right', 'a') then
-            print("jump")
             self.bodyCollider:applyLinearImpulse(0, 1000, 0)
         end
     end
 
     for i, hand in pairs(lovr.headset.getHands()) do
         local realHandPose = mat4(lovr.headset.getPose(hand))
-        
         local realHandPosition = vec3(realHandPose:getPosition())
         local realHandOrientation = quat(realHandPose:getOrientation())
-
-        local handOrientationRelativeToHead = quat(realHandOrientation * realHeadOrientation)
         local handPositionRelativeToHead = vec3(realHandPosition - realHeadPosition)
-        local handPoseRelativeToHead = mat4(handPositionRelativeToHead, handOrientationRelativeToHead)
-
-        local adjustedHandPose = mat4(headShape:getPose()) * handPoseRelativeToHead
+        local adjustedHandPose = mat4(headShape:getPose()):translate(handPositionRelativeToHead):rotate(
+        realHandOrientation)
 
         self.handColliders[i]:setPose(vec3(adjustedHandPose:getPosition()), quat(adjustedHandPose:getOrientation()))
+
+        if self.itemHeld[i] then
+            if lovr.headset.wasReleased(hand, 'grip') then
+                self.itemHeld[i]:destroy()
+                self.itemHeld[i] = nil
+            elseif lovr.headset.wasPressed(hand, 'trigger') then
+                local _, itemCollider = self.itemHeld[i]:getColliders()
+                local userData = itemCollider:getUserData()
+                if userData and userData.onTriggerPressed then
+                    userData.onTriggerPressed()
+                end
+            end
+        elseif lovr.headset.wasPressed(hand, 'grip') then
+            local shape = self.handColliders[i]:getShape()
+            local collider = self.world:overlapShape(
+                shape,
+                vec3(shape:getPosition()),
+                quat(shape:getOrientation()),
+                0,
+                "pickupable"
+            )
+
+            if collider then
+                collider:setPose(
+                    vec3(self.handColliders[i]:getPosition()),
+                    quat(self.handColliders[i]:getOrientation()):mul(quat(-math.pi / 2, 1, 0, 0))
+                )
+                self.itemHeld[i] = lovr.physics.newWeldJoint(self.handColliders[i], collider)
+            end
+        end
     end
 end
 
 function vrController:draw(pass)
     for i, collider in ipairs(self.handColliders) do
-        gizmo_draw(pass, mat4(collider:getPose()))
-        -- pass:setColor(0.75, 0.56, 0.44)
-        -- drawBoxCollider(pass, collider, not hands.solid[i])
+        gizmo_draw(pass, mat4(collider:getPose()), 0.2)
     end
 end
 
 function lovr.load()
     lovr.graphics.setBackgroundColor(0.208, 0.208, 0.275)
     world = lovr.physics.newWorld({
-        tags = { "character", "leftHand", "rightHand", "pickupable" }
+        tags = { "character", "hand", "leftHand", "rightHand", "pickupable" }
     })
     world:setGravity(0, -9.8, 0)
 
@@ -216,12 +256,20 @@ function lovr.load()
 
     terrain_load()
 
+    -- pickupable:new
+
     gun = lovr.graphics.newModel('ruger.glb')
     gun_collider = world:newCollider(0, 1.5, -2)
     gun_collider:setKinematic(false)
     gun_collider:addShape(lovr.physics.newConvexShape(gun))
     gun_collider:setSleepingAllowed(false)
     gun_collider:setTag("pickupable")
+    gun_collider:setUserData({
+        onTriggerPressed = function(a, b, contact)
+            gunshot:play()
+        end
+    })
+
 
     box_collider = world:newBoxCollider(0, .35, -2, .7)
     box_collider:setKinematic(true)
@@ -569,6 +617,10 @@ function lovr.draw(pass)
     -- -- display world positioned items after this
 
 
+    -- for i, hand in ipairs(lovr.headset.getHands()) do
+    --     -- pass:cone(vec3(lovr.headset.getPosition(hand)), 0.10, 0.2, quat(lovr.headset.getOrientation(hand)))
+    --     -- gizmo_draw(pass, mat4(lovr.headset.getPose(hand)), 0.2)
+    -- end
 
 
     -- -- local pos = vec3(pose:getPosition())
@@ -617,7 +669,7 @@ function lovr.draw(pass)
     pass:translate(hx, 0, hz)
     pass:rotate(quat(virtual_head_pose:getOrientation()):conjugate())
     pass:translate(-hx, 0, -hz)
-    
+
     pass:translate(
         -(virtual_head_position.x - head_position.x),
         -(virtual_head_position.y - head_position.y),
@@ -640,7 +692,7 @@ function lovr.draw(pass)
     pass:draw(gun, mat4(gun_collider:getPose()))
     gizmo_draw(pass, mat4(gun_collider:getPose()), 1)
 
-
+    -- pass:cone(0, 0, 0, 0.25, 0.5)
 
     -- -- pass:setViewport(0, 0, 100, 100)
     -- -- pass:fill(camera)
