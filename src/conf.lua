@@ -1,4 +1,5 @@
 function lovr.conf(t)
+
     -- Set the project version and identity
     t.version = '0.18.0'
     t.identity = 'default'
@@ -38,7 +39,7 @@ function lovr.conf(t)
     t.headset.antialias = true
     t.headset.stencil = false
     t.headset.submitdepth = true
-    t.headset.overlay = false
+    t.headset.overlay = true
 
     -- Math settings
     t.math.globals = true
@@ -50,7 +51,7 @@ function lovr.conf(t)
     t.window.width = 1080
     t.window.height = 600
     t.window.fullscreen = false
-    t.window.resizable = false
+    t.window.resizable = true
     t.window.title = 'LÖVR'
     t.window.icon = nil
 end

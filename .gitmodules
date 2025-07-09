@@ -1,0 +1,3 @@
+[submodule "vendor/lovr-phywire"]
+	path = vendor/lovr-phywire
+	url = git@github.com:jmiskovic/lovr-phywire.git

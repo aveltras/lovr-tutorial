@@ -27,6 +27,10 @@ build: (prepare-build-directory "build")
     cmake {{ lovr_directory }}
     cmake --build .
 
+[working-directory: "build"]
+watch:
+    ./bin/lovr --debug --console --watch {{ android_assets }}
+
 [working-directory: "android-build"]
 apk-build buildtype="Release": (prepare-build-directory "android-build")
     cmake \
@@ -50,8 +54,4 @@ apk-install:
 
 keystore-generate name:
     keytool -genkey -keystore {{ name }}.keystore -alias {{ name }} -keyalg RSA -keysize 2048 -validity 10000
-
-
-
-
 
