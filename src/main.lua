@@ -30,6 +30,8 @@ local phywireEnabled = false
 local pickupable = {}
 pickupable.__index = pickupable
 
+local bullets = {}
+
 function pickupable:new(model, userData)
     model = lovr.graphics.newModel('ruger.glb')
     collider = world:newCollider(0, 1.5, -2)
@@ -78,6 +80,7 @@ function vrController:new(world, playerHeight)
         bodyCollider = bodyCollider,
         handColliders = handColliders,
         handVelocity = { lovr.math.newVec3(), lovr.math.newVec3() },
+        handPreviousPose = { lovr.math.newMat4(), lovr.math.newMat4() },
         itemHeld = { nil, nil },
         thumbstickDeadzone = 0.4,
         turnMode = "smooth",
@@ -97,14 +100,14 @@ function vrController:getHeadPose()
 end
 
 function vrController:update(dt)
-    local previousOrigin = mat4(self.origin);
+    -- local previousOrigin = mat4(self.origin);
     self.origin:set(self.bodyCollider:getPose())
 
     -- local rawVelocity = (vec3(self.origin:getPosition()) - vec3(previousOrigin:getPosition())) / dt
     -- print("rawVelocity", rawVelocity:length())
 
     local realHeadPose = mat4(lovr.headset.getPose("head"))
-    local realHeadOrientation = quat(realHeadPose:getOrientation())
+    -- local realHeadOrientation = quat(realHeadPose:getOrientation())
     local realHeadPosition = vec3(realHeadPose:getPosition())
 
     local shapes = self.bodyCollider:getShapes()
@@ -117,7 +120,7 @@ function vrController:update(dt)
     shapes[2]:setOffset(realHeadPosition.x, realHeadPosition.y, realHeadPosition.z)
 
     if lovr.headset.isTracked('right') then
-        local x, y = lovr.headset.getAxis('right', 'thumbstick')
+        local x, _ = lovr.headset.getAxis('right', 'thumbstick')
         if math.abs(x) > self.thumbstickDeadzone then
             if self.turnMode == "snap" then -- Snap horizontal turning
                 if self.snapTurnCooldown > 0 then
@@ -181,19 +184,40 @@ function vrController:update(dt)
         local realHandOrientation = quat(realHandPose:getOrientation())
         local handPositionRelativeToHead = vec3(realHandPosition - realHeadPosition)
         local adjustedHandPose = mat4(headShape:getPose()):translate(handPositionRelativeToHead):rotate(
-        realHandOrientation)
+            realHandOrientation)
 
-        self.handColliders[i]:setPose(vec3(adjustedHandPose:getPosition()), quat(adjustedHandPose:getOrientation()))
+        local previousPosition = vec3(self.handPreviousPose[i]:getPosition())
+        local currentPosition = vec3(adjustedHandPose:getPosition())
+        local rawVelocity = (currentPosition - previousPosition) / dt
+        self.handVelocity[i]:set(self.handVelocity[i]:lerp(rawVelocity, 0.1))
+        local predictedPosition = vec3(currentPosition + self.handVelocity[i] * dt)
+        self.handPreviousPose[i]:set(adjustedHandPose)
+        self.handColliders[i]:setPose(predictedPosition, quat(adjustedHandPose:getOrientation()))
 
         if self.itemHeld[i] then
             if lovr.headset.wasReleased(hand, 'grip') then
-                self.itemHeld[i]:destroy()
+                -- local _, itemCollider = self.itemHeld[i]:getColliders()
+                -- itemCollider:setGravityScale(1)
+                self.itemHeld[i]:setKinematic(false)
+                self.itemHeld[i]:setLinearVelocity(self.handVelocity[i])
+                -- self.itemHeld[i]:destroy()
                 self.itemHeld[i] = nil
-            elseif lovr.headset.wasPressed(hand, 'trigger') then
-                local _, itemCollider = self.itemHeld[i]:getColliders()
-                local userData = itemCollider:getUserData()
-                if userData and userData.onTriggerPressed then
-                    userData.onTriggerPressed()
+            else
+                -- self.itemHeld[i]:setPose(vec3(self.handColliders[i]:getPosition()),
+                -- quat(self.handColliders[i]:getOrientation()))
+
+                self.itemHeld[i]:setPose(
+                    vec3(self.handColliders[i]:getPosition()),
+                    quat(self.handColliders[i]:getOrientation()):mul(quat(-math.pi / 2, 1, 0, 0))
+                )
+
+                if lovr.headset.wasPressed(hand, 'trigger') then
+                    -- local collider =
+                    -- local _, itemCollider = self.itemHeld[i]:getColliders()
+                    local userData = self.itemHeld[i]:getUserData()
+                    if userData and userData.onTriggerPressed then
+                        userData.onTriggerPressed()
+                    end
                 end
             end
         elseif lovr.headset.wasPressed(hand, 'grip') then
@@ -211,7 +235,9 @@ function vrController:update(dt)
                     vec3(self.handColliders[i]:getPosition()),
                     quat(self.handColliders[i]:getOrientation()):mul(quat(-math.pi / 2, 1, 0, 0))
                 )
-                self.itemHeld[i] = lovr.physics.newWeldJoint(self.handColliders[i], collider)
+                collider:setKinematic(true)
+                self.itemHeld[i] = collider
+                -- self.itemHeld[i] = lovr.physics.newWeldJoint(self.handColliders[i], collider)
             end
         end
     end
@@ -265,8 +291,15 @@ function lovr.load()
     gun_collider:setSleepingAllowed(false)
     gun_collider:setTag("pickupable")
     gun_collider:setUserData({
-        onTriggerPressed = function(a, b, contact)
+        onTriggerPressed = function()
+            local direction = quat(gun_collider:getOrientation()):direction()
+            local origin = vec3(gun_collider:getPosition())
+            local bulletCollider = world:newSphereCollider(origin, 0.01)
+            bulletCollider:setContinuous(true)
+            bulletCollider:setLinearVelocity(direction * 100)
+            bullets[#bullets + 1] = bulletCollider
             gunshot:play()
+            print(direction)
         end
     })
 
@@ -375,185 +408,12 @@ function lovr.update(dt)
         print("button")
         wireframeEnabled = not wireframeEnabled
     end
-
-
-
-
-
-    -- local virtual_hand_pose_position = vec3(virtual_head_pose:getPosition()) + real_hand_position_relative
-    -- local virtual_hand_pose = virtual_head_pose * real_hand_pose_relative
-    -- local virtual_hand_pose = mat4(virtual_head_pose):translate(relative_virtual_hand_position)
-
-
-
-
-
-    -- local offset = head_position.y / 2
-    -- print("offset", offset)
-
-    -- local collider_pose = mat4(capsule_collider:getPose())
-    -- collider_pose[14] = 0
-
-    -- print("collider_pose", collider_pose:getPosition())
-
-    -- for i, hand in pairs(lovr.headset.getHands()) do
-    --     local hand_pose = mat4(lovr.headset.getPose(hand))
-
-    --     local adjusted_hand_pose = hand_pose * collider_pose
-
-    --     local hand_pos = vec3(adjusted_hand_pose:getPosition())
-    --     local ref_pose = vec3(collider_pose:getPosition())
-
-    --     -- print("hand", hand_pose)
-
-    --     -- local hand_position = vec3(hand_pose:getPosition()):rotate(quat(collider_pose))
-    --     -- hand_pose:tran(collider_pose)
-    --     -- print("hand: " .. i, hand_position.y)
-
-
-    --     hands.colliders[i]:setPose(vec3(hand_pos.x + ref_pose.x, hand_pos.y, hand_pos.z + ref_pose.z), quat(adjusted_hand_pose:getOrientation()))
-
-
-    -- --     local rw =  -- real world pose of controllers
-    -- --     local vr = mat4(hands.colliders[i]:getPose()) -- vr pose of palm colliders
-
-    -- end
-    -- --
-
-    -- local pose = mat4(capsule_collider:getPose())
-    -- pose[14] = pose[14] - collider_offset
-
-
-    -- CapsuleShape:setLength
-
-
-    -- print("collider", motion.pose:getPosition())
-    -- capsule_collider:setPosition(vec3(motion.pose:getPosition()) + vec3(0,collider_offset,-1))
-    -- capsule_collider:setOrientation(quat(motion.pose:getOrientation()))
-    -- capsule_collider:setOrientation(motion.pose:getOrientation())
-    -- capsule_collider:setPose(motion.pose:getPosition() + vec3(0, collider_offset, 0), motion.pose:getOrientation())
-
-    -- print(mat4(lovr.headset.getPose()):getScale())
-
-
-    -- locomotion(dt)
-    -- motion.update(dt)
-
-
-
-    -- if lovr.headset.wasPressed('right', 'a') then
-    --     capsule_collider:applyLinearImpulse(0, 1000, 0)
-    -- end
-
-
-
-
-
-
-
-
-    -- -- hand updates - location, orientation, solidify on trigger button, grab on grip button
-    -- for i, hand in pairs(lovr.headset.getHands()) do
-    --     -- align collider with controller by applying force (position) and torque (orientation)
-    --     local rw = mat4(lovr.headset.getPose(hand)) -- real world pose of controllers
-    --     local vr = mat4(hands.colliders[i]:getPose()) -- vr pose of palm colliders
-
-    --     local collider_pose = mat4(capsule_collider:getPose())
-    --     collider_pose[13] = collider_pose[13] + rw[13]
-    --     collider_pose[14] = collider_pose[14] + rw[14] - collider_offset
-    --     collider_pose[15] = collider_pose[15] + rw[15]
-    --     hands.colliders[i]:setPose(vec3(collider_pose:getPosition()), quat(rw:getOrientation()))
-
-    --     hands.solid[i] = lovr.headset.isDown(hand, 'trigger')
-
-    --     -- pose[14] = pose[14] - collider_offset
-    --     -- pass:transform(pose:invert())
-
-
-    --     -- local angle, ax,ay,az = quat(rw):mul(quat(vr):conjugate()):unpack()
-    --     -- angle = ((angle + math.pi) % (2 * math.pi) - math.pi) -- for minimal motion wrap to (-pi, +pi) range
-    --     -- -- hands.colliders[i]:applyTorque(vec3(ax, ay, az):mul(angle * dt * hand_torque))
-    --     -- -- hands.colliders[i]:applyForce((vec3(rw) - vec3(vr)):mul(dt * hand_force))
-    --     -- -- solidify when trigger touched
-    --     -- hands.solid[i] = lovr.headset.isDown(hand, 'trigger')
-
-    --     -- -- local shape =
-    --     -- -- shape[1]:setSensor(not hands.solid[i])
-    --     -- -- print()
-
-    --     -- -- hands.colliders[i]:getShapes()[1]:setSensor()
-    --     hands.colliders[i]:setSensor(not hands.solid[i])
-    --     -- -- hold/release colliders
-    --     if lovr.headset.isDown(hand, 'grip') and hands.touching[i] and not hands.holding[i] then
-
-    --         print("grab")
-
-    --         print(hands.colliders[i]:getPosition())
-    --         print(hands.colliders[i]:getOrientation())
-
-    --         hands.holding[i] = hands.touching[i]
-
-    --         -- hands.holding[i]:setKinematic(true)
-    --         -- grab object with ball joint to drag it, and slider joint to also match the orientation
-    --         lovr.physics.newWeldJoint(hands.colliders[i], hands.holding[i])
-    --         -- lovr.physics.newBallJoint(hands.colliders[i], hands.holding[i], vr:mul(0, 0, 0))
-    --         -- lovr.physics.newSliderJoint(hands.colliders[i], hands.holding[i], quat(vr):direction())
-    --     end
-    --     if lovr.headset.wasReleased(hand, 'grip') and hands.holding[i] then
-    --         print("release")
-    --         for _, joint in ipairs(hands.colliders[i]:getJoints()) do
-    --             joint:destroy()
-    --         end
-    --         -- hands.holding[i]:setKinematic(false)
-    --         hands.holding[i] = nil
-    --     end
-
-    --     if lovr.headset.wasPressed('right', 'b') and hands.holding[i] ~= nil then
-
-    --         gunshot:play()
-    --     end
-
-    --     if hands.holding[i] then
-    --         hands.holding[i]:setPose(
-    --             vec3(hands.colliders[i]:getPosition()),
-    --             quat(hands.colliders[i]:getOrientation())
-    --         )
-    --     end
-
-    -- end
-
-
-
-    -- hands.touching = {nil, nil} -- to be set again in collision resolver
 end
 
 function lovr.draw(pass)
-    -- -- Render hands
-    -- pass:setColor(1, 1, 1)
-    -- local radius = 0.05
-    -- for _, hand in ipairs(lovr.headset.getHands()) do
-    --     -- Whenever pose of hand or head is used, need to account for VR movement
-    --     local poseRW = mat4(lovr.headset.getPose(hand))
-    --     local poseVR = mat4(motion.pose):mul(poseRW)
-    --     poseVR:scale(radius)
-    --     pass:sphere(poseVR)
-    -- end
-
-
-
-
-    -- pass:setMaterial(camera)
-    -- pass:plane(1, 1, -5, 1, 1)
-
     ui_draw(pass)
-
-
-
     local head_transform = mat4(lovr.headset.getPose("head"))
     local head_position = vec3(head_transform:getPosition())
-
-
-
     -- local world_position = vec3(motion.pose:getPosition())
     -- local collider_position = vec3(capsule_collider:getPose())
     local hand_transform = mat4(lovr.headset.getPose("hand/left"))
@@ -561,106 +421,33 @@ function lovr.draw(pass)
     local hand_collider_position = vec3(mat4(hands.colliders[1]:getPose()):getPosition())
 
 
-
-    -- pass:text(
-    --     string.format(
-    --         "Head Position : \nx: %.2f\ny: %.2f\nz: %.2f\n\nCollider Position: \nx: %.2f\ny: %.2f\nz: %.2f",
-    --         head_position.x,
-    --         head_position.y,
-    --         head_position.z,
-    --         collider_position.x,
-    --         collider_position.y,
-    --         collider_position.z
-    --     ),
-    --     vec3(head_transform * vec3(-0.1, 0, -0.7)), .02, head_transform:getOrientation())
-
-    -- pass:text(
-    --     string.format(
-    --         "Hand Position : \nx: %.2f\ny: %.2f\nz: %.2f\n\nHand Collider Position: \nx: %.2f\ny: %.2f\nz: %.2f",
-    --         hand_position.x,
-    --         hand_position.y,
-    --         hand_position.z,
-    --         hand_collider_position.x,
-    --         hand_collider_position.y,
-    --         hand_collider_position.z
-    --     ),
-    --     vec3(head_transform * vec3(0.1, 0, -0.7)), .02, head_transform:getOrientation())
-
-
-
-
-    -- -- pass:setProjection(1, mat4():orthographic(100, 100))
-    -- -- pass:setViewPose(1, mat4())
-
-
-    -- -- print(mat4(pass:getViewPose(1)):getPosition())
-    -- -- print("views", views)
-
-
-    -- -- local pose_eye_left = mat4(pass:getViewPose(1))
-    -- -- local pose_eye_right = mat4(pass:getViewPose(2))
-
-    -- -- local eye_diff = vec3(pose_eye_right:getPosition()).x - vec3(pose_eye_left:getPosition()).x
-
-    -- -- local collider_pose = mat4(capsule_collider:getPose())
-    -- -- collider_pose:translate(0, collider_offset, 0)
-    -- -- pass:setViewPose(1, mat4(collider_pose):translate(-eye_diff / 2, collider_offset, 0), false)
-    -- -- pass:setViewPose(2, mat4(collider_pose):translate(eye_diff / 2, collider_offset, 0), false)
-    -- -- pass:setViewPose(2, pose, false)
-
-
-
-    -- -- print("eye diff", eye_diff)
-    -- -- print("left", vec3(pose_left:getPosition()).x)
-    -- -- print("right", vec3(pose_right:getPosition()).x)
-
-    -- -- display world positioned items after this
-
-
-    -- for i, hand in ipairs(lovr.headset.getHands()) do
-    --     -- pass:cone(vec3(lovr.headset.getPosition(hand)), 0.10, 0.2, quat(lovr.headset.getOrientation(hand)))
-    --     -- gizmo_draw(pass, mat4(lovr.headset.getPose(hand)), 0.2)
-    -- end
-
-
-    -- -- local pos = vec3(pose:getPosition())
-
-    -- -- pose[13] = pos.x
-    -- -- pose[14] = pos.y - collider_offset
-    -- -- pose[15] = pos.z
-
-
-    -- -- -- pose:setPosition(pos.x, pos.y + collider_offset, pos.z)
-    -- -- -- pose:translate(vec3(0,pos.y + collider_offset,0))
-
-
-    -- local pose = mat4(capsule_collider:getPose())
-    -- pose[14] = pose[14] - collider_offset
-
-
-    -- print("virtual_head_pose", vec3(virtual_head_pose:getPosition()).y)
+    for i, hand in pairs(lovr.headset.getHands()) do
+        gizmo_draw(pass, mat4(lovr.headset.getPose(hand)), 0.2)
+    end
+    --
 
     local virtual_head_pose = mat4(controller:getHeadPose())
     local virtual_head_position = vec3(virtual_head_pose:getPosition())
 
-    -- pass:transform(virtual_head_pose:invert())
-
-    local viewPose = mat4(pass:getViewPose(2))
-    local viewPosition = vec3(viewPose:getPosition())
-
-
     pass:text(
         string.format(
-            "Head Position : \nx: %.2f\ny: %.2f\nz: %.2f\n\nVirtual Head Position : \nx: %.2f\ny: %.2f\nz: %.2f\n\nView Position : \nx: %.2f\ny: %.2f\nz: %.2f",
+            [[
+              Head Position:
+              x: %.2f
+              y: %.2f
+              z: %.2f
+
+              Virtual Head Position:
+              x: %.2f
+              y: %.2f
+              z: %.2f
+              ]],
             head_position.x,
             head_position.y,
             head_position.z,
             virtual_head_position.x,
             virtual_head_position.y,
-            virtual_head_position.z,
-            viewPosition.x,
-            viewPosition.y,
-            viewPosition.z
+            virtual_head_position.z
         ),
         vec3(head_transform * vec3(-0.1, 0, -0.7)), .02, head_transform:getOrientation())
 
@@ -692,18 +479,6 @@ function lovr.draw(pass)
     pass:draw(gun, mat4(gun_collider:getPose()))
     gizmo_draw(pass, mat4(gun_collider:getPose()), 1)
 
-    -- pass:cone(0, 0, 0, 0.25, 0.5)
-
-    -- -- pass:setViewport(0, 0, 100, 100)
-    -- -- pass:fill(camera)
-
-
-    -- -- print("gun_collider", gun_collider:getPose())
-
-
-    -- wall = world:newBoxCollider(0, 2, -5, 10, 2, .2)
-
-
     local wallPos = vec3(wall:getPosition())
     pass:setColor(0.2, 0.2, 0.2)
     pass:box(wallPos.x, wallPos.y, wallPos.z, 10, 2, .2, wall:getOrientation())
@@ -717,35 +492,10 @@ function lovr.draw(pass)
 
     terrain_draw(pass)
 
-    -- -- pass:setColor(.1, .1, .12)
-    -- -- pass:plane(0, 0, 0, 100, 100, -math.pi / 2, 1, 0, 0)
-    -- -- pass:setColor(.2, .2, .2)
-    -- -- pass:plane(0, 1e-5, 0, 100, 100, -math.pi / 2, 1, 0, 0, 'line', 100, 100)
-
-    -- -- for i, hand in ipairs(lovr.headset.getHands()) do
-    -- --     hand = hand .. '/point'
-    -- --     local position = vec3(lovr.headset.getPosition(hand))
-    -- --     local direction = quat(lovr.headset.getOrientation(hand)):direction()
-
-    -- --     pass:setColor(1, 1, 1)
-    -- --     pass:sphere(position, .01)
-
-    -- --     pass:setColor(1, 0, 0)
-    -- --     pass:line(position, position + direction * 50)
-    -- -- end
-
-
-
-    -- -- pass:setViewport(100, 100, 250, 250)
-    -- -- pass:setViewPose(1, mat4():lookAt(vec3(0,2,-10), vec3(capsule_collider:getPosition())), true)
-    -- -- pass:setViewPose(2, mat4():lookAt(vec3(0,2,-10), vec3(capsule_collider:getPosition())), true)
-
-    -- -- pass:setViewport(0, 0, 100, 100)
-    -- -- pass:fill(camera)
-
-    -- pass:origin()
-
-
+    for i, bullet in ipairs(bullets) do
+        pass:setColor(0, 1, 0)
+        pass:sphere(vec3(bullet:getPosition()), 0.01, quat(bullet:getOrientation()))
+    end
 
     -- pass:setColor(1,1,1)
     -- layerPass:reset()
@@ -762,8 +512,6 @@ function lovr.draw(pass)
     -- camera_draw(cameraPass)
     -- pass:setViewport(0, 0, 100, 100)
     -- pass:fill(camera)
-
-
 
     return lovr.graphics.submit(pass)
 end
@@ -937,24 +685,4 @@ function ui_update(dt)
         -- otherwise extend the pointer's ray outwards by 50 meters and use it as the tip.
         tips[hand]:set(inside and hit or (rayPosition + rayDirection * 50))
     end
-end
-
-function drawBoxCollider(pass, collider, is_sensor)
-    -- query current pose (location and orientation)
-    local pose = mat4(collider:getPose())
-    gizmo_draw(pass, pose)
-    -- query dimensions of box
-    local shape = collider:getShapes()[1]
-    local size = vec3(shape:getDimensions())
-    -- draw box
-    pose:scale(size)
-    pass:box(pose, is_sensor and 'line' or 'fill')
-end
-
-function registerCollisionCallback(collider, callback)
-    collisionCallbacks = collisionCallbacks or {}
-    for _, shape in ipairs(collider:getShapes()) do
-        collisionCallbacks[shape] = callback
-    end
-    -- to be called with arguments callback(otherCollider, world) from update function
 end
