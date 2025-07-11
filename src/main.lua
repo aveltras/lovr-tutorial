@@ -198,29 +198,16 @@ function vrController:update(dt)
 
         if self.itemHeld[i] then
             if lovr.headset.wasReleased(hand, 'grip') then
-                -- local _, itemCollider = self.itemHeld[i]:getColliders()
+                local _, itemCollider = self.itemHeld[i]:getColliders()
                 -- itemCollider:setGravityScale(1)
-                self.itemHeld[i]:setKinematic(false)
-                self.itemHeld[i]:setLinearVelocity(self.handVelocity[i])
-                -- self.itemHeld[i]:destroy()
+                -- self.itemHeld[i]:setKinematic(false)
+                itemCollider:setLinearVelocity(self.handVelocity[i])
+                self.itemHeld[i]:destroy()
                 self.itemHeld[i] = nil
             else
-                -- self.itemHeld[i]:setPose(vec3(self.handColliders[i]:getPosition()),
-                -- quat(self.handColliders[i]:getOrientation()))
-
-                self.itemHeld[i]:setPose(
-                    vec3(self.handColliders[i]:getPosition()),
-                    quat(self.handColliders[i]:getOrientation()):mul(quat(-math.pi / 2, 1, 0, 0))
-                )
-
-                if lovr.headset.wasPressed(hand, 'trigger') then
-                    -- local collider =
-                    -- local _, itemCollider = self.itemHeld[i]:getColliders()
-                    local userData = self.itemHeld[i]:getUserData()
-                    if userData and userData.onTriggerPressed then
-                        userData.onTriggerPressed()
-                    end
-                end
+                local _, itemCollider = self.itemHeld[i]:getColliders()
+                itemCollider:getUserData().update(dt, hand, self.handColliders[i])
+                -- self.itemHeld[i]:getUserData().update(dt, hand, self.handColliders[i])
             end
         elseif lovr.headset.wasPressed(hand, 'grip') then
             local shape = self.handColliders[i]:getShape()
@@ -237,9 +224,9 @@ function vrController:update(dt)
                     vec3(self.handColliders[i]:getPosition()),
                     quat(self.handColliders[i]:getOrientation()):mul(quat(-math.pi / 2, 1, 0, 0))
                 )
-                collider:setKinematic(true)
-                self.itemHeld[i] = collider
-                -- self.itemHeld[i] = lovr.physics.newWeldJoint(self.handColliders[i], collider)
+                -- collider:setKinematic(true)
+                -- self.itemHeld[i] = collider
+                self.itemHeld[i] = lovr.physics.newWeldJoint(self.handColliders[i], collider)
             end
         end
     end
@@ -254,8 +241,12 @@ end
 function lovr.load()
     lovr.graphics.setBackgroundColor(0.208, 0.208, 0.275)
     world = lovr.physics.newWorld({
-        tags = { "character", "hand", "leftHand", "rightHand", "pickupable" }
+        tags = { "character", "hand", "leftHand", "rightHand", "pickupable" },
+        stabilization = 0.8,
     })
+
+    world:disableCollisionBetween("character", "pickupable")
+
     world:setGravity(0, -9.8, 0)
 
     gunshot = lovr.audio.newSource('gunshot.wav')
@@ -288,22 +279,47 @@ function lovr.load()
 
     gun = lovr.graphics.newModel('ruger.glb')
     gun_collider = world:newCollider(0, 1.5, -2)
-    gun_collider:setKinematic(false)
     gun_collider:addShape(lovr.physics.newConvexShape(gun))
-    gun_collider:setSleepingAllowed(false)
     gun_collider:setTag("pickupable")
     gun_collider:setUserData({
-        onTriggerPressed = function()
-            local direction = quat(gun_collider:getOrientation()):direction()
-            local origin = vec3(gun_collider:getPosition())
-            local bulletCollider = world:newSphereCollider(origin, 0.01)
-            bulletCollider:setContinuous(true)
-            bulletCollider:setMass(0.021)
-            bulletCollider:setLinearVelocity(direction * 100)
-            bullets[#bullets + 1] = bulletCollider
-            local source = gunshot:clone()
-            source:play()
-        end
+        update = function(dt, device, holder)
+            if lovr.headset.wasPressed(device, 'trigger') then
+                local direction = quat(gun_collider:getOrientation()):direction()
+                local origin = vec3(gun_collider:getPosition())
+                local bulletCollider = world:newSphereCollider(origin, 0.01)
+                bulletCollider:setContinuous(true)
+                bulletCollider:setMass(0.021)
+                bulletCollider:setLinearVelocity(direction * 100)
+                bullets[#bullets + 1] = bulletCollider
+                local source = gunshot:clone()
+                source:play()
+            end
+        end,
+    })
+
+    automatic_gun_collider = world:newCollider(0, 1.5, -2)
+    automatic_gun_collider:addShape(lovr.physics.newConvexShape(gun))
+    automatic_gun_collider:setTag("pickupable")
+    automatic_gun_collider:setUserData({
+        cooldown = 0,
+        update = function(dt, device, holder)
+            if lovr.headset.isDown(device, 'trigger') then
+                if automatic_gun_collider:getUserData().cooldown < 0 then
+                    local direction = quat(automatic_gun_collider:getOrientation()):direction()
+                    local origin = vec3(automatic_gun_collider:getPosition())
+                    local bulletCollider = world:newSphereCollider(origin, 0.01)
+                    bulletCollider:setContinuous(true)
+                    bulletCollider:setMass(0.021)
+                    bulletCollider:setLinearVelocity(direction * 100)
+                    bullets[#bullets + 1] = bulletCollider
+                    local source = gunshot:clone()
+                    source:play()
+                    automatic_gun_collider:getUserData().cooldown = 0.1
+                end
+            end
+
+            automatic_gun_collider:getUserData().cooldown = automatic_gun_collider:getUserData().cooldown - dt
+        end,
     })
 
 
@@ -485,7 +501,12 @@ function lovr.draw(pass)
     pass:box(vec3(box_pose:getPosition()), vec3(.7), box_pose:getOrientation())
     pass:setColor(0.925, 0, 0)
     pass:draw(gun, mat4(gun_collider:getPose()))
-    gizmo_draw(pass, mat4(gun_collider:getPose()), 1)
+    -- gizmo_draw(pass, mat4(gun_collider:getPose()), 1)
+
+    pass:setColor(0.925, 0, 0.7)
+    pass:draw(gun, mat4(automatic_gun_collider:getPose()))
+    -- gizmo_draw(pass, mat4(gun_collider:getPose()), 1)
+
 
     local wallPos = vec3(wall:getPosition())
     pass:setColor(0.2, 0.2, 0.2)
