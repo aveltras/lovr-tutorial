@@ -32,6 +32,8 @@ pickupable.__index = pickupable
 
 local bullets = {}
 
+local bottles = {}
+
 function pickupable:new(model, userData)
     model = lovr.graphics.newModel('ruger.glb')
     collider = world:newCollider(0, 1.5, -2)
@@ -296,10 +298,11 @@ function lovr.load()
             local origin = vec3(gun_collider:getPosition())
             local bulletCollider = world:newSphereCollider(origin, 0.01)
             bulletCollider:setContinuous(true)
+            bulletCollider:setMass(0.021)
             bulletCollider:setLinearVelocity(direction * 100)
             bullets[#bullets + 1] = bulletCollider
-            gunshot:play()
-            print(direction)
+            local source = gunshot:clone()
+            source:play()
         end
     })
 
@@ -311,6 +314,11 @@ function lovr.load()
     wall = world:newBoxCollider(0, 1, -5, 10, 2, .2)
     wall:setKinematic(true)
 
+    for offset = -2, 2, 0.50 do
+        local bottle = world:newCylinderCollider(offset, 2.25, -5, 0.05, 0.5)
+        bottle:setOrientation(-math.pi / 2, 1, 0, 0)
+        table.insert(bottles, bottle)
+    end
 
     local head_transform = mat4(lovr.headset.getPose("head"))
     local head_position = vec3(head_transform:getPosition())
@@ -495,6 +503,11 @@ function lovr.draw(pass)
     for i, bullet in ipairs(bullets) do
         pass:setColor(0, 1, 0)
         pass:sphere(vec3(bullet:getPosition()), 0.01, quat(bullet:getOrientation()))
+    end
+
+    for i, bottle in ipairs(bottles) do
+        pass:setColor(0, 1, 1)
+        pass:cylinder(vec3(bottle:getPosition()), 0.05, 0.5, quat(bottle:getOrientation()))
     end
 
     -- pass:setColor(1,1,1)
